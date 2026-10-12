@@ -1,4 +1,4 @@
-"""BƯỚC 3c — trifecta split + egress allowlist (13'). ĐÂY LÀ PHẦN KHÓ NHẤT.
+"""Checkpoint 3c/3d — on-behalf-of authorization and trifecta split.
 
 Đọc CHECKPOINTS.md (§3c) trước khi viết code. Tóm tắt yêu cầu:
 
@@ -59,16 +59,136 @@ Interface bắt buộc (agent/loop.py import và gọi hàm này nếu tồn t�
 """
 from __future__ import annotations
 
+import hashlib
+import json
+import re
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
+from uuid import uuid4
+
+from agent import ledger, pii, policy, tools
 
 REPORTS_DIR = Path(__file__).resolve().parent.parent / "reports"
 DEFAULT_LEDGER_PATH = REPORTS_DIR / "ledger.jsonl"
 
 
-class RunnerScaffoldPending(NotImplementedError):
-    """Only the original 3c stub uses this to enable the CP1/CP2 baseline."""
+ROOT_SCOPES = ("search_docs", "read_customer")
+TICKET_FILENAME = re.compile(r"ticket-([0-9]+)(?:b)?\.md")
+
+
+@dataclass(frozen=True)
+class RunContext:
+    principal_id: str
+    agent_id: str
+    run_id: str
+    scopes: tuple[str, ...]
+    parent_scopes: tuple[str, ...]
+    expires_at: str
+    ledger_path: Path
+
+
+def _args_hash(args: dict) -> str:
+    encoded = json.dumps(args, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
+def _gate(run: RunContext, tool: str, args: dict, classification: str,
+          purpose: str, egress: bool = False) -> bool:
+    context = policy.PolicyContext(
+        data_classification=classification,
+        request_purpose=purpose,
+        agent_owner=run.agent_id,
+        delegation_depth=1,
+        egress_enabled=egress,
+        principal_id=run.principal_id,
+        requested_tool=tool,
+        agent_scopes=run.scopes,
+        parent_scopes=run.parent_scopes,
+        expires_at=run.expires_at,
+    )
+    allowed, reason = policy.check(context)
+    if not isinstance(reason, str) or not reason.strip():
+        raise RuntimeError("policy returned an empty reason")
+    ledger.append({
+        "ts": datetime.now(timezone.utc).isoformat(),
+        "on_behalf_of": run.principal_id,
+        "agent_id": run.agent_id,
+        "run_id": run.run_id,
+        "expires_at": run.expires_at,
+        "tool": tool,
+        "args_hash": _args_hash(args),
+        "classification": classification,
+        "decision": "allow" if allowed else "deny",
+        "reason": reason,
+    }, run.ledger_path)
+    return allowed
+
+
+def _run_a(message: str, llm, run: RunContext) -> tuple[list[int], str]:
+    if not _gate(run, "search_docs", {"query": message}, "internal", "summarize-tickets"):
+        return [], "Không được phép tìm kiếm ticket."
+    docs = tools.search_docs(message)
+    # Inspection stays in Run A. Attacker-selected IDs and URLs are discarded.
+    llm.find_injection("\n\n".join(doc["text"] for doc in docs))
+    sanitized_docs = [{"id": doc["id"], "text": pii.redact(doc["text"])} for doc in docs]
+    ticket_ids = set()
+    for doc in sanitized_docs:
+        match = TICKET_FILENAME.fullmatch(doc["id"])
+        if match:
+            ticket_ids.add(int(match.group(1)))
+    return sorted(ticket_ids), llm.summarize(sanitized_docs)
+
+
+def _run_b(ticket_ids: list[int], run: RunContext) -> None:
+    if not ticket_ids:
+        return
+    if any(type(ticket_id) is not int for ticket_id in ticket_ids):
+        raise ValueError("Run B only accepts integer ticket IDs")
+    # The mapping is stored beside private records: authorize before opening it.
+    if not _gate(run, "read_customer", {"ticket_ids": ticket_ids, "phase": "trusted-mapping"},
+                 "restricted", "support-reply"):
+        return
+    customers = json.loads(tools.CUSTOMERS_FILE.read_text(encoding="utf-8"))
+    selected_tickets = set(ticket_ids)
+    customer_ids = sorted({
+        record["customer_id"] for record in customers
+        if selected_tickets.intersection(record.get("related_tickets", []))
+    })
+    del customers
+    records = []
+    for customer_id in customer_ids:
+        if _gate(run, "read_customer", {"customer_id": customer_id}, "restricted", "support-reply"):
+            records.append(tools.read_customer(customer_id))
+    if records:
+        url = "http://127.0.0.1:10024/reconcile"
+        body = {"records": records}
+        if _gate(run, "http_post", {"url": url, "body": body}, "restricted", "support-reply", egress=True):
+            tools.http_post(url, body)
 
 
 def handle(message: str, llm, log_dir: Path | None = None,
            principal_id: str = "support_l1") -> str:
-    raise RunnerScaffoldPending("BƯỚC 3c: implement trifecta split")
+    ledger_path = Path(log_dir) / "ledger.jsonl" if log_dir is not None else DEFAULT_LEDGER_PATH
+    expires_at = (datetime.now(timezone.utc) + timedelta(minutes=5)).isoformat()
+    run_a = RunContext(
+        principal_id=principal_id,
+        agent_id="lab24-agent/run-a",
+        run_id=str(uuid4()),
+        scopes=("search_docs",),
+        parent_scopes=ROOT_SCOPES,
+        expires_at=expires_at,
+        ledger_path=ledger_path,
+    )
+    run_b = RunContext(
+        principal_id=principal_id,
+        agent_id="lab24-agent/run-b",
+        run_id=str(uuid4()),
+        scopes=("read_customer",),
+        parent_scopes=ROOT_SCOPES,
+        expires_at=expires_at,
+        ledger_path=ledger_path,
+    )
+    ticket_ids, summary = _run_a(message, llm, run_a)
+    _run_b(ticket_ids, run_b)
+    return summary

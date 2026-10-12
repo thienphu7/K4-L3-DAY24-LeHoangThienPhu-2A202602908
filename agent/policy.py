@@ -1,4 +1,4 @@
-"""BƯỚC 3b — PEP (Policy Enforcement Point) tại tool call (15').
+"""Checkpoint 3b/3c — policy and on-behalf-of authorization at tool calls.
 
 Cổng chặn TRƯỚC KHI tool thật sự execute. Đọc CHECKPOINTS.md (§3b).
 
@@ -34,7 +34,13 @@ không phải xác thực người dùng production.
 """
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
+from datetime import datetime, timezone
+from pathlib import Path
+
+
+PRINCIPALS_FILE = Path(__file__).resolve().parent.parent / "data" / "principals.json"
 
 
 @dataclass(frozen=True)
@@ -52,4 +58,41 @@ class PolicyContext:
 
 
 def check(context: PolicyContext) -> tuple[bool, str]:
-    raise NotImplementedError("BƯỚC 3b: implement policy check")
+    if context.data_classification == "restricted" and context.egress_enabled:
+        return False, "restricted data cannot leave through egress"
+    if context.data_classification not in {"public", "internal", "restricted"}:
+        return False, "unknown data classification"
+    if not context.agent_owner:
+        return False, "missing agent identity"
+    if context.delegation_depth < 0:
+        return False, "invalid delegation depth"
+
+    try:
+        principals = json.loads(PRINCIPALS_FILE.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return False, "trusted principal registry unavailable"
+    if not isinstance(principals, dict):
+        return False, "invalid trusted principal registry"
+    principal = principals.get(context.principal_id)
+    if not isinstance(principal, dict):
+        return False, "unknown principal"
+    if context.request_purpose not in principal.get("purposes", []):
+        return False, "purpose is not permitted for principal"
+
+    try:
+        expires_at = datetime.fromisoformat(context.expires_at.replace("Z", "+00:00"))
+    except (AttributeError, ValueError, TypeError):
+        return False, "missing or invalid expiry"
+    if expires_at.tzinfo is None:
+        return False, "expiry must include timezone"
+    if expires_at <= datetime.now(timezone.utc):
+        return False, "agent authorization expired"
+    if not context.requested_tool:
+        return False, "missing requested tool"
+
+    effective_scopes = set(principal.get("allowed_tools", [])) & set(context.agent_scopes)
+    if context.delegation_depth > 0:
+        effective_scopes &= set(context.parent_scopes)
+    if context.requested_tool not in effective_scopes:
+        return False, "tool outside effective delegated scopes"
+    return True, "principal, purpose, scopes and expiry are valid"

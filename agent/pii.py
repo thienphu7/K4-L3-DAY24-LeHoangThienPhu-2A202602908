@@ -30,10 +30,50 @@ set ở tests/vn_pii_testset.jsonl):
 """
 from __future__ import annotations
 
+import re
+
+
+# Contextual bank accounts take precedence over phone/CCCD matches.
+_PATTERNS = (
+    (
+        "EMAIL",
+        re.compile(
+            r"(?<![\w.+-])[A-Za-z0-9._%+-]+@"
+            r"[A-Za-z0-9.-]+\.[A-Za-z]{2,}(?![\w@-])"
+        ),
+        0,
+    ),
+    (
+        "VN_BANK_ACCOUNT",
+        re.compile(
+            r"\b(?:STK|số\s+tài\s+khoản|so\s+tai\s+khoan)"
+            r"\s*[:=]?\s*([0-9]{8,16})(?!\w)",
+            re.IGNORECASE,
+        ),
+        1,
+    ),
+    ("VN_CCCD", re.compile(r"(?<!\w)[0-9]{12}(?!\w)"), 0),
+    (
+        "VN_PHONE",
+        re.compile(r"(?<!\w)0(?:[ -]?[0-9]){9,10}(?![ -]?[0-9]|\w)"),
+        0,
+    ),
+)
+
 
 def detect(text: str) -> list[dict]:
-    raise NotImplementedError("BƯỚC 3a: implement PII detection")
+    entities = []
+    for entity_type, pattern, group in _PATTERNS:
+        for match in pattern.finditer(text):
+            start, end = match.span(group)
+            if any(start < item["end"] and item["start"] < end for item in entities):
+                continue
+            entities.append({"type": entity_type, "start": start, "end": end})
+    return sorted(entities, key=lambda item: (item["start"], item["end"]))
 
 
 def redact(text: str) -> str:
-    raise NotImplementedError("BƯỚC 3a: implement PII redaction")
+    for entity in reversed(detect(text)):
+        replacement = f"[REDACTED_{entity['type']}]"
+        text = text[:entity["start"]] + replacement + text[entity["end"]:]
+    return text

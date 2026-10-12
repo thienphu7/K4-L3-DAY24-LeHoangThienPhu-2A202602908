@@ -1,4 +1,4 @@
-"""BƯỚC 3d — audit ledger append-only, tamper-evident (10').
+"""Checkpoint 3e — tamper-evident audit ledger.
 
 JSONL, mỗi tool call một dòng. Đọc CHECKPOINTS.md (§3d).
 
@@ -37,12 +37,60 @@ rồi gọi verify() phải trả về False.
 """
 from __future__ import annotations
 
+import hashlib
+import json
 from pathlib import Path
 
 
+GENESIS_HASH = "0" * 64
+REQUIRED_FIELDS = {
+    "ts", "agent_id", "run_id", "tool", "args_hash", "classification", "decision", "reason",
+}
+
+
+def _hash(entry: dict) -> str:
+    payload = {key: value for key, value in entry.items() if key != "hash"}
+    encoded = json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    return hashlib.sha256(encoded).hexdigest()
+
+
 def append(entry: dict, path: Path) -> dict:
-    raise NotImplementedError("BƯỚC 3d: implement ledger append")
+    path = Path(path)
+    previous_hash = GENESIS_HASH
+    if path.exists():
+        if not verify(path):
+            raise ValueError("existing ledger failed verification")
+        lines = path.read_text(encoding="utf-8").splitlines()
+        if lines:
+            previous_hash = json.loads(lines[-1])["hash"]
+    result = dict(entry)
+    result.pop("hash", None)
+    result["prev_hash"] = previous_hash
+    result["hash"] = _hash(result)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open("a", encoding="utf-8") as stream:
+        stream.write(json.dumps(result, ensure_ascii=False) + "\n")
+    return result
 
 
 def verify(path: Path) -> bool:
-    raise NotImplementedError("BƯỚC 3d: implement ledger verify")
+    path = Path(path)
+    if not path.exists():
+        return True
+    previous_hash = GENESIS_HASH
+    try:
+        for line in path.read_text(encoding="utf-8").splitlines():
+            entry = json.loads(line)
+            if not isinstance(entry, dict) or not REQUIRED_FIELDS <= entry.keys():
+                return False
+            reason = entry.get("reason")
+            if not isinstance(reason, str) or not reason.strip():
+                return False
+            if entry["decision"] not in {"allow", "deny"}:
+                return False
+            if entry.get("prev_hash") != previous_hash or entry.get("hash") != _hash(entry):
+                return False
+            previous_hash = entry["hash"]
+    except (OSError, ValueError, KeyError, TypeError):
+        return False
+    return True
