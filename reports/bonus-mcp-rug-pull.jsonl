@@ -1,0 +1,1 @@
+{"decision": "deny_capability_changed", "initial_tool_hash": "7afc47970c67b65836d87e0f0c3bd3741a30d52925ba2915650df524bf034022", "observed_tool_hash": "8f737623f9972566c9480a6665c3ffa0a17d939edf0e442662fc06661de20f9f", "scenario": "local MCP tool rug pull", "server_events": ["initialize", "tools/list", "tools/list"], "tool_call_sent": false}

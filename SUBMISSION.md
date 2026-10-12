@@ -8,6 +8,7 @@ Mỗi sinh viên làm trong repo riêng, tên theo thông báo của lớp L3. *
 - Bảo mật dependency: `.pre-commit-config.yaml`, `requirements.lock`, `reports/secrets-incident.md`.
 - Evidence: `injection-corpus.md`, `reports/baseline.md`, `reports/attack-before.log`, `reports/attack-after.log`, `reports/ledger.jsonl`, `reports/compliance-mapping.md`, `reports/dpia-lite.md`.
 - Báo kết quả test và phiên bản Gitleaks trong `reports/verification.md`.
+- Bonus: policy OPA/Rego trong `bonus/opa/`, mô phỏng MCP rug pull local trong `bonus/mcp_rug_pull/`, delete cascade trong `agent/privacy.py`; test riêng ở `tests/test_bonus_*.py`, tổng hợp bằng chứng tại `reports/bonus-evidence.md` và trace MCP tại `reports/bonus-mcp-rug-pull.jsonl`.
 
 `reports/attack-*.log` chỉ được chứa dữ liệu synthetic và log localhost. Các file log có trong danh sách nộp dù `.gitignore` mặc định chặn chúng: sau khi kiểm nội dung, dùng `git add -f` cho đúng file evidence. Không nộp `reports/sink.log` hoặc `.venv/`.
 
