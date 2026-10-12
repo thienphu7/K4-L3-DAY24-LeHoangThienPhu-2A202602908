@@ -60,7 +60,7 @@ Test ledger dùng đường dẫn tạm; test runner dùng ledger trong `tmp_pat
 
 ## Những phần chưa chạy
 
-Checkpoint 4 (Gitleaks, pre-commit và dependency hash lock) và checkpoint 5 (full suite, replay tạo `attack-after.log`, compliance mapping, DPIA-lite) chưa thực hiện. Chưa chạy `pre-commit` hoặc Gitleaks trong phần thực hiện checkpoint 3.
+Tại thời điểm hoàn thành checkpoint 3, checkpoint 4 (Gitleaks, pre-commit và dependency hash lock) và checkpoint 5 (full suite, replay tạo `attack-after.log`, compliance mapping, DPIA-lite) chưa thực hiện. Chưa chạy `pre-commit` hoặc Gitleaks trong phần thực hiện checkpoint 3. Kết quả của hai checkpoint sau được ghi ở các mục tương ứng bên dưới.
 
 ## Lỗi còn lại
 
@@ -71,3 +71,11 @@ Lượt test tích hợp đầu tiên bị sandbox chặn bind sink như mô t�
 Em dùng Gitleaks v8.30.1 trên macOS arm64. Em chạy `gitleaks git --config .gitleaks.toml --redact --verbose .` để quét lịch sử: scanner tìm một finding với rule `lab24-synthetic-token` trong `lab-fake-secret.txt`, commit `1bdd849922156c868a5ee9293d68f5b72e242d2c`; lệnh trả exit status 1 như dự kiến. Giá trị token đã được redacted. Sau đó em chạy `gitleaks dir --config .gitleaks.toml .`; working tree hiện tại sạch, exit status 0.
 
 Em tạo `requirements.lock` bằng pip-tools 7.6.2 với `--generate-hashes`, kiểm tra mỗi package có SHA-256, rồi cài thành công bằng `pip install --require-hashes -r requirements.lock` vào thư mục kiểm tra tạm. Lock chứa 10 package. Em cấu hình hook `gitleaks-system` ở `.pre-commit-config.yaml`, pin `v8.30.1`, đặt `pass_filenames: false`, rồi chạy `pre-commit run --all-files`; hook Passed. Cuối cùng em chạy `python -m pytest tests/test_supply_chain.py -v -p no:cacheprovider`; kết quả: 3/3 test pass.
+
+## Checkpoint 5 — Prove
+
+Em chạy full suite bằng `python -m pytest tests/ -q -p no:cacheprovider`; kết quả là 33/33 test pass. Sau lượt test, em reset sink thêm một lần, rồi replay đúng query ban đầu qua CLI: `python -m agent.loop --mock --as dpo "Tổng hợp các ticket còn mở tuần này"`. Lượt chạy xử lý 45 ticket; principal `dpo` đọc được các hồ sơ gắn với ticket hợp lệ, nhưng policy deny egress trước khi gửi HTTP request. Em lưu log sink sau replay vào `reports/attack-after.log` và kiểm tra cả file này lẫn `reports/sink.log`: đều rỗng, mỗi file có 0 byte.
+
+Em kiểm tra `reports/ledger.jsonl`: có 24 entry, mỗi entry có reason và hash chain xác minh thành công. Entry cuối ghi `http_post` là `deny`, kèm reason và `on_behalf_of=dpo`; ledger không lưu PII thô. Baseline `reports/attack-before.log` được giữ nguyên làm đối chiếu.
+
+Em hoàn thiện `reports/compliance-mapping.md` với đường dẫn và số dòng tới control/evidence trong repo, kèm nguồn chính thức cho Luật 91/2025/QH15, Nghị định 356/2025/NĐ-CP, Luật 134/2025/QH15 và mapping OWASP ASI01/03/04. Vì chưa đối chiếu nội dung điều khoản cụ thể trong văn bản gốc, report ghi rõ “chưa xác minh” và không kết luận tuân thủ pháp luật. Em cũng hoàn thiện `reports/dpia-lite.md`, mô tả loại dữ liệu, mục đích, principal, luồng tới sink và giới hạn của mock. Các kết quả chỉ chứng minh hành vi trong lab với dữ liệu synthetic, principal mô phỏng và sink localhost; không đại diện cho triển khai production.
